@@ -11,11 +11,19 @@ Puppet::Type.type(:virt).provide(:openvz) do
 
   case Facter.value(:operatingsystem)
   when "Ubuntu", "Debian"
-    @@vzcache = "/var/lib/vz/template/cache/"
-    @@vzconf = "/etc/vz/conf/"
+    def vzcache
+      "/var/lib/vz/template/cache/"
+    end
+    def vzconf
+      "/etc/vz/conf/"
+    end
   when "CentOS", "Fedora"
-    @@vzcache = "/vz/template/cache/"
-    @@vzconf = "/etc/vz/conf/"
+    def vzcache
+      "/vz/template/cache/"
+    end
+    def vzconf
+      "/etc/vz/conf/"
+    end
   else
     raise Puppet::Error, "Sorry, this provider is not supported for your Operation System, yet :)"
   end
@@ -34,7 +42,7 @@ Puppet::Type.type(:virt).provide(:openvz) do
 
   def ostemplate
     os = resource[:os_template]
-    if File.file? @@vzcache + os + '.tar.gz' || !resource[:tmpl_repo].nil?
+    if File.file? vzcache + os + '.tar.gz' || !resource[:tmpl_repo].nil?
       return os
     end
     arch = resource[:arch].nil? ? Facter.value(:architecture) : resource[:arch]
@@ -49,7 +57,7 @@ Puppet::Type.type(:virt).provide(:openvz) do
   # Private method to download OpenVZ template if don't already exists
   def download(url='http://download.openvz.org/template/precreated/')
     template = ostemplate
-    file = @@vzcache + template + '.tar.gz'
+    file = vzcache + template + '.tar.gz'
     if !File.file? file or File.zero? file
       require 'open-uri'
       Puppet.info "Downloading #{url}#{template}.tar.gz"
@@ -62,7 +70,9 @@ Puppet::Type.type(:virt).provide(:openvz) do
   # If CTID not specified, it will assign the first possible value
   # Note that CT ID <= 100 are reserved for OpenVZ internal purposes.
   def ctid
-    if tmp = vzlist('-1', '-a','-N',resource[:name]).split(" ")[0]
+    if tmp = resource[:id]
+      id = tmp
+    elsif tmp = vzlist('-1', '-a','-N',resource[:name]).split(" ")[0]
     #if tmp = vzlist('--no-header', '-a','-N',resource[:name]).split(" ")[1]
       id = tmp
     elsif !id = resource[:id]
@@ -70,7 +80,7 @@ Puppet::Type.type(:virt).provide(:openvz) do
       tmp = out.empty? ? 100 : Integer(out.split.last)
       id = tmp <= 100 ? 101 : tmp + 1
     end
-    return id if id
+    return id.to_s if id
     raise Puppet::Error, "CTID not specified"
   end
 
@@ -123,7 +133,7 @@ Puppet::Type.type(:virt).provide(:openvz) do
 
   def purge
     destroy
-  #  File.unlink("#{@@vzconf}/#{ctid}.conf.destroyed")
+  #  File.unlink("#{vzconf}/#{ctid}.conf.destroyed")
   end
 
   def stop
@@ -175,7 +185,7 @@ Puppet::Type.type(:virt).provide(:openvz) do
 
   SET_PARAMS = %w(name capability applyconfig applyconfig_map iptables features
     searchdomain hostname disabled setmode cpuunits cpulimit quotatime
-    quotaugidlimit ioprio cpus diskspace diskinodes devices devnodes
+    quotaugidlimit ioprio cpus diskinodes devices devnodes bootorder
   ).freeze
 
   SET_PARAMS.each do |arg|
@@ -188,23 +198,31 @@ Puppet::Type.type(:virt).provide(:openvz) do
     end
   end
 
+  def ctname
+      get_value('name')
+  end
+  def ctname=(value)
+      vzctl('set', ctid, "--name", value, "--save")
+  end
+
   def get_value(arg)
     debug "Getting parameter #{arg} value"
-    conf = @@vzconf + ctid + '.conf'
-    value = open(conf).grep(/^#{arg.upcase}/)
+    conf = vzconf + ctid + '.conf'
+    value = open(conf).grep(/^#{arg.upcase}=/)
+    debug "Found vz param: #{arg} = #{value}"
     value.size == 0 ? '' : value[0].split('"')[1].downcase
   end
 
   def apply(paramname, value)
     args = ['set', ctid]
-    [value].flatten.each do |value|
-      args << '--'+paramname << value
+    [value].flatten.each do |value2|
+      args << '--'+paramname << value2
     end
     vzctl(args, '--save')
   end
 
   def resources_parameters
-    conf = @@vzconf + ctid + '.conf'
+    conf = vzconf + ctid + '.conf'
 
     results = []
     resource[:resources_parameters].flatten.each do |value|
@@ -224,16 +242,95 @@ Puppet::Type.type(:virt).provide(:openvz) do
     vzctl(args, '--save')
   end
 
+  def get_page_size_value_in_mebibytes(param)
+    # Value from conf is in pages number or Bytes in human notation
+    # Fetch barrier value if defined
+    value = get_value(param).slice(/:?([^:]+)$/, 1)
+    # Value will always be downcase (forced by get_value)
+    suffix = value.slice!(/[tgmk]$/)
+    value = value.to_i
+    # If human notation convert to page number.
+    unless suffix.nil?
+      case suffix
+      when 't'
+        value *= 1024 **4
+      when 'g'
+        value *= 1024 ** 3
+      when 'm'
+        value *= 1024 ** 2
+      when 'k'
+        value *= 1024
+      end
+      # Pages size is 4096 bytes
+      value /= 4096
+    end
+    # Convert pages number to Mebibytes
+    value / 256
+  end
+
   def memory
-    get_value("PRIVVMPAGES").split(":")[0].to_i / 256 #MB
+    get_page_size_value_in_mebibytes('PHYSPAGES')
   end
 
   def memory=(value)
-    unless resource[:configfile] == "unlimited" #FIXME use regex for the match
-      vzctl('set', ctid, "--vmguarpages", value.to_s + "M", "--save")
-      vzctl('set', ctid, "--oomguarpages", value.to_s + "M", "--save")
-      vzctl('set', ctid, "--privvmpages", value.to_s + "M", "--save")
+    apply('ram', value.to_s + 'M')
+  end
+
+  def swap
+    get_page_size_value_in_mebibytes('SWAPPAGES')
+  end
+
+  def swap=(value)
+    apply('swap', value.to_s + 'M')
+  end
+
+  def get_block_size_value_in_bytes(param)
+    # Value from conf is in pages number or Bytes in human notation
+    # Fetch barrier value if defined
+    value = get_value(param).slice(/^([^:]+):?/, 1)
+    # Value will always be downcase (forced by get_value)
+    suffix = value.slice!(/[tgmk]$/)
+    value = value.to_i
+    # If human notation convert to page number.
+    unless suffix.nil?
+      case suffix
+      when 't'
+        value *= 1024 **4
+      when 'g'
+        value *= 1024 ** 3
+      when 'm'
+        value *= 1024 ** 2
+      when 'k'
+        value *= 1024
+      end
+      # block size is 1024 bytes
+      value /= 1024
+    else
+        value *= 1024
     end
+  end
+
+
+  def bytes_human(bytes)
+    {
+      'T' => 1024 ** 4,
+      'G' => 1024 ** 3,
+      'M' => 1024 ** 2,
+      'K' => 1024,
+    }.each do | suffix, multiplier |
+      if bytes > multiplier && bytes % multiplier == 0
+        return (bytes / multiplier).to_i.to_s + suffix
+      end
+    end
+    bytes.to_s
+  end
+
+  def diskspace
+    bytes_human(get_block_size_value_in_bytes('DISKSPACE'))
+  end
+
+  def diskspace=(value)
+      apply('diskspace', value)
   end
 
   ["autoboot", "noatime"].each do |name|
@@ -293,9 +390,9 @@ Puppet::Type.type(:virt).provide(:openvz) do
 
   def devices=(value)
     args = ['set', ctid]
-    [value].flatten.each do |value|
-      paramname = value.start_with?("b:", "c:") ? "devices" : "devnodes"
-      args << '--'+paramname << value
+    [value].flatten.each do |value2|
+      paramname = value2.start_with?("b:", "c:") ? "devices" : "devnodes"
+      args << '--'+paramname << value2
     end
     vzctl args, '--save'
   end

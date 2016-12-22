@@ -172,6 +172,13 @@ Puppet::Type.newtype(:virt) do
       end
     end
 
+    newproperty(:ctname, :required_features => :manages_resources) do
+      desc "OpenVZ CT name"
+      defaultto do
+          @resource.name
+      end
+    end
+
     newproperty(:user, :required_features => :manages_users) do
       desc "Sets password for the given user in the guest, creating the user if it does not exists.
   In case guest is not running, it is automatically mounted, then all the appropriate file changes are applied, then it is unmounted."
@@ -240,6 +247,10 @@ Puppet::Type.newtype(:virt) do
       desc "The maximum amount of memory allocation for the guest domain."
 
       isrequired #FIXME Bug #4049
+    end
+
+    newproperty(:swap, :parent => VirtNumericParam, :required_features => :manages_resources) do
+      desc "The maximum amount of swap allocation for the guest domain."
     end
 
     newproperty(:cpus, :parent => VirtNumericParam) do
@@ -631,6 +642,10 @@ Available values:
         @resource.munge_boolean(value)
       end
 
+    end
+
+    newproperty(:bootorder, :parent => VirtNumericParam, :required_features => :manages_resources) do
+        desc "Set order of boot if autoboot is set. The higher the number the sooner it starts."
     end
 
     newproperty(:disabled, :required_features => :disabled) do
