@@ -255,8 +255,6 @@ Puppet::Type.newtype(:virt) do
 
     newproperty(:cpus, :parent => VirtNumericParam) do
       desc "Number of virtual CPUs active in the guest domain."
-
-      defaultto(1)
     end
 
     newproperty(:cpuunits, :parent => VirtNumericParam, :required_features => :cpu_fair) do
